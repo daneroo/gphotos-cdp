@@ -19,19 +19,20 @@ limitations under the License.
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -88,22 +89,111 @@ func main() {
 		return
 	}
 
+	var wg sync.WaitGroup
+	// This is the main window/tab
 	ctx, cancel := s.NewContext()
 	defer cancel()
+	wg.Add(1)
 
+	go s.producer(ctx, &wg)
+	wg.Wait()
+	wg.Add(1)
+
+	numWorkers := 2
+	for i := 0; i < numWorkers; i++ {
+
+		// workerCtx, workerCancel := s.NewContext()
+		// defer workerCancel()
+		wg.Add(1)
+		go s.consumer(ctx, i, &wg)
+	}
+
+	wg.Wait()
+
+	fmt.Println("OK")
+}
+
+func (s *Session) producer(ctx context.Context, wg *sync.WaitGroup) {
 	if err := s.login(ctx); err != nil {
 		log.Print(err)
+		wg.Done() // first Done
 		return
 	}
+	wg.Done() // first Done
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
-		chromedp.ActionFunc(s.navN(*nItemsFlag)),
+		// chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
 		log.Print(err)
-		return
 	}
-	fmt.Println("OK")
+	wg.Done() // second done
+}
+
+func (s *Session) consumer(mainWindowCtx context.Context, w int, wg *sync.WaitGroup) {
+	log.Printf("Wokrer(%d):I should be eating a channel", w)
+	tabCtx, cancel := chromedp.NewContext(mainWindowCtx)
+	defer cancel() // close the tab
+	// ensure the worker tab is created
+	if err := chromedp.Run(tabCtx); err != nil {
+		log.Fatal(err)
+	}
+
+	urls := []string{
+		"https://photos.google.com/photo/AF1QipMOl0XXrO9WPSv5muLRBFpbyzGsdnrqUqtF8f73",
+		"https://photos.google.com/photo/AF1QipPkwe5j2quecz6Yh01AlG36VcRlpDRUkRhx7iba",
+		"https://photos.google.com/photo/AF1QipPaD26FVXK_Gf0FYHWNTn54Nodp5I6A5VF-MFPS",
+	}
+	for i := 0; i < 100; i++ {
+		log.Printf("Wokrer(%d): percent complete: %d%%", w, i)
+		time.Sleep(time.Duration(rand.Intn(500)) * time.Millisecond)
+
+		chromedp.Run(tabCtx,
+			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				log.Printf("-showPage")
+				return nil
+			}),
+			showPage(urls[i%3]),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				log.Printf("+showPage")
+				return nil
+			}),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				s.dlAndMove(ctx, urls[i%3])
+				return nil
+			}),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				log.Printf("+Download done")
+				return nil
+			}),
+		)
+
+		// time.Sleep(10 * time.Second)
+	}
+
+	// if err := s.login(ctx); err != nil {
+	// 	log.Print(err)
+	// 	wg.Done()
+	// 	return
+	// }
+	// if err := chromedp.Run(ctx,
+	// 	chromedp.ActionFunc(s.firstNav),
+	// 	// chromedp.ActionFunc(s.navN(*nItemsFlag)),
+	// ); err != nil {
+	// 	log.Print(err)
+	// }
+
+	log.Printf("Wokrer(%d): Done", w)
+	wg.Done()
+}
+
+// showPage takes a screenshot of a specific element.
+func showPage(urlstr string) chromedp.Tasks {
+	return chromedp.Tasks{
+		chromedp.Navigate(urlstr),
+		chromedp.WaitReady("body"),
+	}
 }
 
 type Session struct {
@@ -311,9 +401,10 @@ func (s *Session) firstNav(ctx context.Context) error {
 		return err
 	}
 
-	if err := navToLast(ctx); err != nil {
-		return err
-	}
+	// No longer necessary
+	// if err := navToLast(ctx); err != nil {
+	// 	return err
+	// }
 
 	return nil
 }
@@ -383,29 +474,32 @@ func navToEnd(ctx context.Context) error {
 	}
 
 	// Not used for now. Just for experimenting alternative navigation
-	// listFromAlbum(ctx)
+	listFromAlbum(ctx)
+	log.Printf("Successfully Listed all items")
 
-	// try jumping to the end of the page. detect we are there and have stopped
-	// moving when two consecutive screenshots are identical.
-	var previousScr, scr []byte
-	for {
-		chromedp.KeyEvent(kb.PageDown).Do(ctx)
-		chromedp.KeyEvent(kb.End).Do(ctx)
-		chromedp.CaptureScreenshot(&scr).Do(ctx)
-		if previousScr == nil {
-			previousScr = scr
-			continue
-		}
-		if bytes.Equal(previousScr, scr) {
-			break
-		}
-		previousScr = scr
-		time.Sleep(tick)
-	}
+	// amd I guess we are done!
 
-	if *verboseFlag {
-		log.Printf("Successfully jumped to the end")
-	}
+	// // try jumping to the end of the page. detect we are there and have stopped
+	// // moving when two consecutive screenshots are identical.
+	// var previousScr, scr []byte
+	// for {
+	// 	chromedp.KeyEvent(kb.PageDown).Do(ctx)
+	// 	chromedp.KeyEvent(kb.End).Do(ctx)
+	// 	chromedp.CaptureScreenshot(&scr).Do(ctx)
+	// 	if previousScr == nil {
+	// 		previousScr = scr
+	// 		continue
+	// 	}
+	// 	if bytes.Equal(previousScr, scr) {
+	// 		break
+	// 	}
+	// 	previousScr = scr
+	// 	time.Sleep(tick)
+	// }
+
+	// if *verboseFlag {
+	// 	log.Printf("Successfully jumped to the end")
+	// }
 
 	return nil
 }
@@ -418,19 +512,19 @@ func listFromAlbum(ctx context.Context) error {
 	// try looping through all pages
 	// allPhotoIds := map[string]bool{} // temprarily global
 	start := time.Now()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	sel := `a[href^="./photo/"]` // first photo on the landing page
 	for {
 
 		var attrs []map[string]string
 		if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
-			log.Printf("navToEnd: error %s", err)
+			log.Printf("listFromAlbum: error %s", err)
 		} else {
 			atLeastOne := false
 			for _, a := range attrs {
 				href, err := absURL(a["href"]) // could check that href attr exists
 				if err != nil {
-					log.Printf("navToEnd absURL error: %s", err)
+					log.Printf("listFromAlbum absURL error: %s", err)
 					return err
 				}
 				if _, ok := allPhotoIds[href]; !ok {
@@ -446,7 +540,7 @@ func listFromAlbum(ctx context.Context) error {
 				break
 			}
 			if !atLeastOne {
-				// log.Printf("navToEnd: none added (total:%d) - %s left", len(allPhotoIds), time.Until(deadline))
+				log.Printf("listFromAlbum: none added from sel(%d) (total:%d) - %s left", len(attrs), len(allPhotoIds), time.Until(deadline))
 			}
 
 		}
@@ -604,6 +698,7 @@ func startDownload(ctx context.Context) error {
 			// log.Printf("Event: %+v", (*ev).Type)
 		}
 		if err := ev.Do(ctx); err != nil {
+			log.Print(err)
 			return err
 		}
 	}
