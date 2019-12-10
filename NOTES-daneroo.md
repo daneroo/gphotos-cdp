@@ -1,12 +1,22 @@
-# Notes for PR(daneroo) feature/listing branch
+# Notes for PR(daneroo) feature/parallel branch
 
-I don't expect this to be merged as-is. I mostly wanted to share my experiments and get feedback.
-
-If any of it is useful, I can craft proper commits with smaller features.
+This is a new experiment, which I believe simplifies the interaction with the browser considerably.
 
 *I am a first-time contributor, and not very experienced with Go, so would appreciate any feedback both on content and process.*
 
-## Overview
+## Current Iteration: DOM inspection and externalized downloads
+
+### Structure of the DOM in the Google Photos SPA
+
+- `EventNavigatedWithinDocument`
+
+## Nomenclature
+
+- Album/Main vs Photo/Detail Pages
+- MostRecent vs Oldest
+- navToEnd/Last - navLeft : prepare for multidirection traversal
+
+## Previous experiment
 
 When I first started to use the project, I experienced instability and would need to restart the download process a large number of times to get to the end. The process would timeout after 1000-4000 images. To test, I use two accounts one with ~700 images, and one with 31k images.
 
@@ -40,13 +50,42 @@ Another issue, although the `.lasDone` being captured on a successful run is use
 
 If we don't need the authentication flow, (and we persist the auth creds in the profile `-dev`), Chrome can be brought up in `-headless` mode, which considerably reduces memory footprint (`>2Gb` to `<500Mb`), and marginally (23%) increases throughput for the listing experiment.
 
-## `listFromAlbum()`
+## Deprecated `listFromAlbum()`
 
 This is another experiment where the listing was entirely performed in the main album page (by scrolling incrementally). This is even faster. It would also allow iterating either forward or backward through the album.
 
 In a further experiment, I would like to use this process as a coordinating mechanism and perform the actual downloads in separate (potentially multiple) `tabs/contexts`.
 
-### Performance: An Argument for a periodic page reload and headless mode
+### Performance
+
+*All of these times were obtained on a MacBook Air (2015) / 8G RAM.*
+
+### Download 714 Images
+
+baseline: chromedp download: redo with original code from feature/listing, my loop has the shortened `10ms` sleep in `download()`
+
+```bash
+# baseline download(10ms tick), headless
+time ./gphotos-cdp  -dev -vt --headless -n 100
+2019/12/10 15:59:00 Rate (100): 2.77/s Avg Latency: 360.77ms
+2019/12/10 16:00:12 Rate (100): 4.89/s Avg Latency: 204.37ms
+2019/12/10 16:02:27 Rate (100): 2.73/s Avg Latency: 366.27ms
+
+2019/12/10 16:06:51 Rate (714): 3.37/s Avg Latency: 296.67ms
+2019/12/10 16:11:12 Rate (714): 3.41/s Avg Latency: 293.18ms
+
+```
+
+Checksums:
+
+```bash
+# verify
+sha1sum -c gphotos-cdp-715.sha1sums.txt ; echo $?
+# produce
+sha1sum $(find ~/Downloads/gphotos-cdp/ -type f) >gphotos-cdp-715.sha1sums.txt
+```
+
+### An Argument for a periodic page reload and headless mode
 
 Notice how the latency grows quickly without page reload (ms per iteration): [66, 74, 89, 219, 350, 1008,...], and the cumulative rate drops below `4 items/s` after `6000` items.
 
@@ -86,8 +125,6 @@ When using `listFromAlbum()`, we can roughly double the iterations speed again t
 15:24:55 Rate (6001): 38.60/s Avg Latency: 25.91ms
 ```
 
-*All of these times were obtained on a MacBook Air (2015) / 8G RAM.*
-
 ## Starting Chrome with another profile
 
 ```bash
@@ -97,6 +134,7 @@ When using `listFromAlbum()`, we can roughly double the iterations speed again t
 ## TODO
 
 *Move to Document as done.*
+
 - Review Nomenclature, start,end,newest,last,left,right...
 - Refactor common chromedp uses in navLeft,navRight,navToEnd,navToLast
 - `navLeft()` - throw error if loc==prevLoc

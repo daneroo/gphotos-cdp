@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -91,6 +92,11 @@ func main() {
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
+	// enables monitoring of some browser events of interest (verbose only)
+	if *verboseFlag {
+		registerEventListeners(ctx)
+	}
+
 	if err := s.login(ctx); err != nil {
 		log.Print(err)
 		return
@@ -103,6 +109,7 @@ func main() {
 		log.Print(err)
 		return
 	}
+	log.Printf("Number of Observed URLs: %d", len(observedDLURLS))
 	fmt.Println("OK")
 }
 
@@ -134,6 +141,7 @@ func getLastDone(dlDir string) (string, error) {
 	return string(data), nil
 }
 
+// NewSession should be documented
 func NewSession() (*Session, error) {
 	var dir string
 	if *devFlag {
@@ -173,6 +181,8 @@ func NewSession() (*Session, error) {
 	return s, nil
 }
 
+// NewContext should be documented
+// TODO(daneroo): Just override default options.
 func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 	allocatorOpts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
@@ -245,7 +255,7 @@ func (s *Session) login(ctx context.Context) error {
 		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if *verboseFlag {
-				log.Printf("pre-navigate")
+				log.Printf("* login: Pre-navigate")
 			}
 			return nil
 		}),
@@ -259,7 +269,7 @@ func (s *Session) login(ctx context.Context) error {
 			var location string
 			for {
 				if time.Now().After(timeout) {
-					return errors.New("timeout waiting for authentication")
+					return errors.New("login: Timeout waiting for authentication")
 				}
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
@@ -268,19 +278,54 @@ func (s *Session) login(ctx context.Context) error {
 					return nil
 				}
 				if *verboseFlag {
-					log.Printf("Not yet authenticated, at: %v", location)
+					log.Printf("* login: Not yet authenticated, at: %v", location)
 				}
 				time.Sleep(tick)
 			}
-			return nil
+			// return nil // unreachable
 		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if *verboseFlag {
-				log.Printf("post-navigate")
+				log.Printf("* login: Post-navigate")
 			}
 			return nil
 		}),
 	)
+}
+
+// registerEventListeners enables monitoring several events in the browser in a passive way
+// This is currently just for more verbose reporting.
+//  - Currently only used to report internal url navigation between photo pages (EventNavigatedWithinDocument)
+//  - It was also a way to track initiated downloads: EventDownloadWillBegin, before downloading was removed
+//  - Other Events of interest are left in but commented.
+// Other events can be found here: https://godoc.org/github.com/chromedp/cdproto/page.
+// The events are not reported synchronously.
+func registerEventListeners(ctx context.Context) {
+	chromedp.ListenTarget(ctx, func(ev interface{}) {
+		switch ev := ev.(type) {
+		case *page.EventNavigatedWithinDocument:
+			log.Printf("* page.EventNavigatedWithinDocument URL:%+v\n", ev.URL)
+			// case *target.EventTargetInfoChanged:
+			// 	log.Printf("* target.EventTargetInfoChanged URL:%+v\n", ev.TargetInfo.URL)
+			// case *page.EventFrameRequestedNavigation:
+			// 	log.Printf("* page.EventFrameRequestedNavigation URL:%+v\n", ev.URL)
+			// case *cdproto.Message:
+			// log.Printf("* cdproto.Message %+v\n", ev)
+			// case *page.EventDownloadWillBegin:
+			// 	log.Printf("* page.EventDownloadWillBegin URL:%+v\n", ev.URL)
+			// case *cruntime.EventConsoleAPICalled:
+			// 	fmt.Printf("* console.%s call:\n", ev.Type)
+			// 	for _, arg := range ev.Args {
+			// 		fmt.Printf("%s - %s\n", arg.Type, arg.Value)
+			// 	}
+			// case *cruntime.EventExceptionThrown:
+			// 	fmt.Printf("* %s\n", ev.ExceptionDetails)
+			// 	gotException <- true
+			// default:
+			//   log.Printf("Got an event %T", ev)
+		}
+	})
+
 }
 
 // firstNav does either of:
@@ -318,7 +363,7 @@ func (s *Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
-// lastPhoto return the URL for the first image in the album. It is meant to be our termination criteria, as the photos are traversed in reverse order
+// lastPhoto returns the URL for the first image in the album. It is meant to be our termination criteria, as the photos are traversed in reverse order
 func lastPhoto(ctx context.Context) (string, error) {
 	// This should be our TerminationCriteria
 	// extract most recent photo URL
@@ -375,16 +420,16 @@ func navToEnd(ctx context.Context) error {
 		}
 		if len(ids) > 0 {
 			if *verboseFlag {
-				log.Printf("We are ready, because element %v is selected", ids[0])
+				log.Printf("* navToEnd: We are ready, because element %v is selected", ids[0])
 			}
 			break
 		}
 		time.Sleep(tick)
 	}
 
-	// Not used for now. Just for experimenting alternative navigation
-	// listFromAlbum(ctx)
-
+	// TODO(daneroo): replace this with a (?faster) DOM Css selector query (a[href^="./photo/"])
+	// TODO(daneroo): perhaps follow with RignArrow in Album page ?? or merge with NavToLast
+	// TODO(daneroo): 500ms is not always enough between scroll events...
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
 	var previousScr, scr []byte
@@ -410,68 +455,10 @@ func navToEnd(ctx context.Context) error {
 	return nil
 }
 
-var allPhotoIds = map[string]bool{}
-
-// Not used for now. Just for experimenting alternative navigation
-
-func listFromAlbum(ctx context.Context) error {
-	// try looping through all pages
-	// allPhotoIds := map[string]bool{} // temprarily global
-	start := time.Now()
-	deadline := time.Now().Add(5 * time.Second)
-	sel := `a[href^="./photo/"]` // first photo on the landing page
-	for {
-
-		var attrs []map[string]string
-		if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
-			log.Printf("navToEnd: error %s", err)
-		} else {
-			atLeastOne := false
-			for _, a := range attrs {
-				href, err := absURL(a["href"]) // could check that href attr exists
-				if err != nil {
-					log.Printf("navToEnd absURL error: %s", err)
-					return err
-				}
-				if _, ok := allPhotoIds[href]; !ok {
-					allPhotoIds[href] = true
-					if *verboseFlag {
-						log.Printf("listFromAlbum: + %s (total:%d)", href, len(allPhotoIds))
-					}
-					atLeastOne = true
-					deadline = time.Now().Add(10 * time.Second)
-				}
-			}
-			if time.Now().After(deadline) {
-				break
-			}
-			if !atLeastOne {
-				// log.Printf("navToEnd: none added (total:%d) - %s left", len(allPhotoIds), time.Until(deadline))
-			}
-
-		}
-		// ArrowRight is faster overall and doesn't miss any entries
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		// PageDown is slower overall and misses some entries
-		// chromedp.KeyEvent(kb.PageDown).Do(ctx)
-		// sleeping doesn't change anything with ArrowRight
-		// time.Sleep(10 * time.Millisecond)
-
-		// TODO(daneroo): revisit this...
-		if *nItemsFlag > 0 && len(allPhotoIds) > *nItemsFlag {
-			break
-		}
-	}
-	log.Printf("listFromAlbum done adding items, found: %d in: %s", len(allPhotoIds), time.Since(start))
-	if *verboseTimingFlag {
-		log.Printf("Rate (%d): %.2f/s Avg Latency: %.2fms", len(allPhotoIds), float64(len(allPhotoIds))/time.Since(start).Seconds(), time.Since(start).Seconds()*1000.0/float64(len(allPhotoIds)))
-	}
-	return nil
-}
-
 // navToLast sends the "\n" event until we detect that an item is loaded as a
 // new page. It then sends the right arrow key event until we've reached the very
 // last item.
+// TODO(daneroo): remove tick sleep, after ArrowRight.. or combine with NavLast?
 func navToLast(ctx context.Context) error {
 	var location, prevLocation string
 	ready := false
@@ -527,9 +514,6 @@ func navLeft(ctx context.Context, prevLocation *string) error {
 	var location string
 
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	//  I don't think this actually waits for anything, body is already ready
-	// ...usualy takes <10us
-	// chromedp.WaitReady("body", chromedp.ByQuery)
 
 	n := 0
 	for {
@@ -618,6 +602,9 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 	if err := startDownload(ctx); err != nil {
 		return "", err
 	}
+	elapsedStarted = time.Since(dlAndMoveStart)
+
+	tick := 10 * time.Millisecond
 
 	var filename string
 	started := false
@@ -650,10 +637,16 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 			continue
 		}
 		if len(fileEntries) > 1 {
-			return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), s.dlDir)
+			for i := 0; i < len(fileEntries); i++ {
+				log.Printf(" - %s", fileEntries[i].Name())
+			}
+			continue
+			// return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), s.dlDir)
 		}
 		if !started {
 			if len(fileEntries) > 0 {
+				elapsedSawFile = time.Since(dlAndMoveStart)
+
 				started = true
 				deadline = time.Now().Add(time.Minute)
 			}
@@ -697,12 +690,74 @@ func (s *Session) moveDownload(ctx context.Context, dlFile, location string) (st
 	return newFile, nil
 }
 
+// TODO(daneroo): Remove along with old download code (or replace with new metrics/channel)
+var dlAndMoveStart time.Time
+var elapsedStarted time.Duration
+var elapsedSawFile time.Duration
+var elapsedFileDone time.Duration
+
+// TODO(daneroo): remove dead code,
 func (s *Session) dlAndMove(ctx context.Context, location string) (string, error) {
+
+	dlAndMoveStart = time.Now()
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		return "", err
 	}
-	return s.moveDownload(ctx, dlFile, location)
+	elapsedFileDone = time.Since(dlAndMoveStart)
+	ss, ee := s.moveDownload(ctx, dlFile, location)
+	elapsedTotal := time.Since(dlAndMoveStart)
+	log.Printf("started: %s saw:: %s fileDOne: %s moved: %s file:%s", elapsedStarted, elapsedSawFile, elapsedFileDone, elapsedTotal, dlFile)
+	return ss, ee
+	// return s.moveDownload(ctx, dlFile, location)
+}
+
+// This is a map of previously seen download urls.. might grow very large (number of images)
+// It is only used a Set, and to avoid double fetches/downloads, could last n most recent?
+// Used in extractDownloadURLFromDOM
+var observedDLURLS = map[string]bool{}
+
+// TODO(daneroo) - Rename! Give it a type/Struct
+// TODO(daneroo) - explain selector and query boundaries, <c-wiz .../>
+// TODO(daneroo) - Also isolate differnet behaviors: optimistic, verify,..
+func extractDownloadURLFromDOM(ctx context.Context) {
+	// not sure if this element <c-wiz /> type is stable over time. removing it for now
+	// also this seem to be slightly faster without the <cwiz/> element specifier
+	// sel := `c-wiz[data-media-key][data-url]`
+	sel := `[data-media-key][data-url]`
+
+	var attrs []map[string]string
+	if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
+		log.Printf("dlAndMove: document.quertSelectorAll:%s error %s", sel, err)
+	} else {
+		for _, cwiz := range attrs {
+			key := cwiz["data-media-key"]
+			url := cwiz["data-url"]
+			if _, ok := observedDLURLS[url]; !ok {
+				observedDLURLS[url] = true
+				// fetch the header directly: NOT from chromedp...
+				// TODO(daneroo) refactor out, https://golang.org/pkg/net/http/
+				// - replace ioutil.ReadAll with Copy to file (with .XXXdownload)
+				// res, err := http.Head(url) // NOTE: Actually faster to use GET and close Body, that using HEAD
+				res, err := http.Get(url)
+				res.Body.Close()
+				if err != nil {
+					log.Printf("dlAndMove: %s : url:...%s... Error: %s", key, url[25:50], err) // could check that src attr exists
+					//  continue anyway?
+					continue
+				}
+				contentDisposition := res.Header.Get("content-disposition")
+				fname := contentDisposition[17 : len(contentDisposition)-1]
+				contentType := res.Header.Get("content-type")
+				contentLength := res.ContentLength
+				if *verboseFlag {
+					log.Printf("* dlAndMove: %s : url:...%s...", key, url[25:50])
+					log.Printf("dlAndMove: %s : url:...%s... file:%s mime:%s len:%d", key, url[25:50], fname, contentType, contentLength)
+				}
+			}
+		}
+	}
+
 }
 
 // navN successively downloads the currently viewed item, and navigates to the
@@ -740,11 +795,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 					return err
 				}
 			} else {
-				// This is to test the completeness of the listFromAlbum
-				// _, ok := allPhotoIds[location]
-				// if !ok {
-				// 	log.Printf("Listing (%d): %v found:%v", n, location, ok)
-				// }
+				extractDownloadURLFromDOM(ctx)
 				if *verboseFlag {
 					log.Printf("Listing (%d): %v", n, location)
 				}
