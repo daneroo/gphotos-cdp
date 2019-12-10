@@ -24,6 +24,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -720,7 +721,7 @@ var observedDLURLS = map[string]bool{}
 // TODO(daneroo) - Rename! Give it a type/Struct
 // TODO(daneroo) - explain selector and query boundaries, <c-wiz .../>
 // TODO(daneroo) - Also isolate differnet behaviors: optimistic, verify,..
-func extractDownloadURLFromDOM(ctx context.Context) {
+func (s *Session) extractDownloadURLFromDOM(ctx context.Context) error {
 	// not sure if this element <c-wiz /> type is stable over time. removing it for now
 	// also this seem to be slightly faster without the <cwiz/> element specifier
 	// sel := `c-wiz[data-media-key][data-url]`
@@ -737,15 +738,17 @@ func extractDownloadURLFromDOM(ctx context.Context) {
 				observedDLURLS[url] = true
 				// fetch the header directly: NOT from chromedp...
 				// TODO(daneroo) refactor out, https://golang.org/pkg/net/http/
-				// - replace ioutil.ReadAll with Copy to file (with .XXXdownload)
+				// - replace ioutil.ReadAll with Copy to file (with .XYZf7download)
 				// res, err := http.Head(url) // NOTE: Actually faster to use GET and close Body, that using HEAD
+
+				start := time.Now()
 				res, err := http.Get(url)
-				res.Body.Close()
 				if err != nil {
 					log.Printf("dlAndMove: %s : url:...%s... Error: %s", key, url[25:50], err) // could check that src attr exists
 					//  continue anyway?
 					continue
 				}
+				defer res.Body.Close()
 				contentDisposition := res.Header.Get("content-disposition")
 				fname := contentDisposition[17 : len(contentDisposition)-1]
 				contentType := res.Header.Get("content-type")
@@ -754,10 +757,30 @@ func extractDownloadURLFromDOM(ctx context.Context) {
 					log.Printf("* dlAndMove: %s : url:...%s...", key, url[25:50])
 					log.Printf("dlAndMove: %s : url:...%s... file:%s mime:%s len:%d", key, url[25:50], fname, contentType, contentLength)
 				}
+
+				newDir := filepath.Join(s.dlDir, key)
+				if err := os.MkdirAll(newDir, 0700); err != nil {
+					return err
+				}
+				newFile := filepath.Join(newDir, fname)
+				// uniq++
+				// newFile := fmt.Sprintf("%s.%d", filepath.Join(newDir, fname), uniq)
+
+				out, err := os.Create(newFile)
+				defer out.Close()
+
+				n, err := io.Copy(out, res.Body)
+				if err != nil {
+					return err
+				}
+				if n != contentLength {
+					log.Printf("Warning unexpected file length: expected:%d got:%d", contentLength, n)
+				}
+				log.Printf("Downloaded %s in %s from %s", newFile, time.Since((start)), url)
 			}
 		}
 	}
-
+	return nil
 }
 
 // navN successively downloads the currently viewed item, and navigates to the
@@ -795,7 +818,10 @@ func (s *Session) navN(N int) func(context.Context) error {
 					return err
 				}
 			} else {
-				extractDownloadURLFromDOM(ctx)
+				err := s.extractDownloadURLFromDOM(ctx)
+				if err != nil {
+					return err
+				}
 				if *verboseFlag {
 					log.Printf("Listing (%d): %v", n, location)
 				}

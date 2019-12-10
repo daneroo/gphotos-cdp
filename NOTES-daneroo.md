@@ -4,6 +4,27 @@ This is a new experiment, which I believe simplifies the interaction with the br
 
 *I am a first-time contributor, and not very experienced with Go, so would appreciate any feedback both on content and process.*
 
+## KeysD
+
+```js
+Generate event for Download to debug
+type Key struct {
+    Code string
+    Key string
+    Text string
+    Unmodified string
+    Native int64
+    Windows int64
+    Shift bool
+    Print bool
+}
+            Code  Key Text  unMod Nat Win Shift Print
+'D':      {"KeyD", "D", "D", "d", 68, 68, true, true},
+
+document.querySelector('body').dispatchEvent(new KeyboardEvent('keydown', {key:"D",code:"keyD",shiftKey:true}))
+
+```
+
 ## Current Iteration: DOM inspection and externalized downloads
 
 ### Structure of the DOM in the Google Photos SPA
@@ -73,6 +94,11 @@ time ./gphotos-cdp  -dev -vt --headless -n 100
 
 2019/12/10 16:06:51 Rate (714): 3.37/s Avg Latency: 296.67ms
 2019/12/10 16:11:12 Rate (714): 3.41/s Avg Latency: 293.18ms
+2019/12/10 16:20:48 Rate (714): 3.13/s Avg Latency: 319.28ms
+
+# parallel-1 worker
+2019/12/10 16:38:38 Rate (714): 4.83/s Avg Latency: 206.92ms
+2019/12/10 16:47:26 Rate (714): 5.41/s Avg Latency: 184.93ms
 
 ```
 
